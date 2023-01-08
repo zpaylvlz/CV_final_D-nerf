@@ -23,7 +23,7 @@ try:
 except ImportError:
     pass
 
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
 def batchify(fn, chunk):
@@ -225,7 +225,7 @@ def create_nerf(args):
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, input_ch_time=input_ch_time,
                  use_viewdirs=args.use_viewdirs, embed_fn=embed_fn,
-                 zero_canonical=not args.not_zero_canonical) #.to(device)
+                 zero_canonical=not args.not_zero_canonical).to(device)
     grad_vars = list(model.parameters())
 
     model_fine = None
@@ -234,7 +234,7 @@ def create_nerf(args):
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, input_ch_time=input_ch_time,
                           use_viewdirs=args.use_viewdirs, embed_fn=embed_fn,
-                          zero_canonical=not args.not_zero_canonical) #.to(device)
+                          zero_canonical=not args.not_zero_canonical).to(device)
         grad_vars += list(model_fine.parameters())
 
     network_query_fn = lambda inputs, viewdirs, ts, network_fn : run_network(inputs, viewdirs, ts, network_fn,
@@ -243,6 +243,8 @@ def create_nerf(args):
                                                                 embedtime_fn=embedtime_fn,
                                                                 netchunk=args.netchunk,
                                                                 embd_time_discr=args.nerf_type!="temporal")
+
+    # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
 
     if args.do_half_precision:
@@ -615,37 +617,13 @@ class DNeRFTrainer(LightningModule):
     def __init__(self):
         super(DNeRFTrainer, self).__init__()
         
-    def setup(self, stage=None):
+    def setup(self):
         self.parser = config_parser()
-        self.args = self.parser.parse_args()
-        print ('setup')
-        #self.batch_rays = None
-        #self.frame_time = .0
+        self.args = parser.parse_args()
         
-
-        # Create log dir and copy the config file
-        self.basedir = self.args.basedir
-        self.expname = self.args.expname
-        os.makedirs(os.path.join(self.basedir, self.expname), exist_ok=True)
-        f = os.path.join(self.basedir, self.expname, 'args.txt')
-        with open(f, 'w') as file:
-            for arg in sorted(vars(self.args)):
-                attr = getattr(self.args, arg)
-                file.write('{} = {}\n'.format(arg, attr))
-        if self.args.config is not None:
-            f = os.path.join(self.basedir, self.expname, 'config.txt')
-            with open(f, 'w') as file:
-                file.write(open(self.args.config, 'r').read())
-        
-
-    
-    def train_dataloader(self):
-        print ('train_dataloader')
-        
-        # Load data
         if (self.args.dataset_type == 'blender'):
             images, self.poses, self.times, self.render_poses, self.render_times, self.hwf, i_split = \
-            load_blender_data(self.args.datadir, self.args.half_res, self.args.testskip)
+            load_blender_data(args.datadir, args.half_res, args.testskip)
             self.i_train, self.i_val, self.i_test = i_split
             
             self.near = 2.
@@ -660,7 +638,7 @@ class DNeRFTrainer(LightningModule):
             print ('Unknown datasets type', self.args.dataset_type, 'exiting')
             return
             
-        min_time, max_time = self.times[self.i_train[0]], self.times[self.i_train[-1]]
+        min_time, max_time = times[i_train[0]], times[i_train[-1]]
         assert min_time == 0., "time must start at 0"
         assert max_time == 1., "max time must be 1"
 
@@ -672,9 +650,25 @@ class DNeRFTrainer(LightningModule):
         if self.args.render_test:
             self.render_poses = np.array(self.poses[self.i_test])
             self.render_times = np.array(self.times[self.i_test])
-                # Create nerf model
+
+        # Create log dir and copy the config file
+        basedir = self.args.basedir
+        expname = self.args.expname
+        os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+        f = os.path.join(basedir, expname, 'args.txt')
+        with open(f, 'w') as file:
+            for arg in sorted(vars(self.args)):
+                attr = getattr(self.args, arg)
+                file.write('{} = {}\n'.format(arg, attr))
+        if self.args.config is not None:
+            f = os.path.join(basedir, expname, 'config.txt')
+            with open(f, 'w') as file:
+                file.write(open(self.args.config, 'r').read())        
+        
+        
+        # Create nerf model
         self.render_kwargs_train, self.render_kwargs_test, self.start, self.grad_vars, self.optimizer = create_nerf(self.args)
-        #self.global_step = self.start
+        self.global_step = self.start
 
         self.bds_dict = {
             'near' : self.near,
@@ -684,8 +678,8 @@ class DNeRFTrainer(LightningModule):
         self.render_kwargs_test.update(self.bds_dict)
         
         # Move testing data to GPU
-        #self.render_poses = torch.Tensor(self.render_poses).to(device)
-        #self.render_times = torch.Tensor(self.render_times).to(device)
+        self.render_poses = torch.Tensor(self.render_poses).to(device)
+        self.render_times = torch.Tensor(self.render_times).to(device)
 
         # Short circuit if only rendering out from trained model
         if self.args.render_only:
@@ -725,21 +719,24 @@ class DNeRFTrainer(LightningModule):
 
                 print('done')
                 self.i_batch = 0
-            print ('moving traing')
+
             # Move training data to GPU
-            #self.images = torch.Tensor(self.images).to(device)
-            #self.poses = torch.Tensor(self.poses).to(device)
-            #self.times = torch.Tensor(self.times).to(device)
+            self.images = torch.Tensor(self.images).to(device)
+            self.poses = torch.Tensor(self.poses).to(device)
+            self.times = torch.Tensor(self.times).to(device)
             if self.use_batching:
-                self.rays_rgb = torch.Tensor(self.rays_rgb) #.to(device)
+                self.rays_rgb = torch.Tensor(self.rays_rgb).to(device)
 
             self.N_iters = self.args.N_iter + 1
             print('Begin')
 
             # Summary writers
-            writer = SummaryWriter(os.path.join(self.basedir, 'summaries', self.expname))
+            writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
 
             self.start = self.start + 1
+    
+    def train_dataloader(self):
+
         return DataLoader(self.images,
                           shuffle=True,
                           num_workers=4,
@@ -754,60 +751,7 @@ class DNeRFTrainer(LightningModule):
                           #batch_size= ,
                           #pin_memory=True)
     
-
-    def training_step(self , batch, batch_nb):
-        self.time0 = time.time()
-        if self.use_batching:
-            raise NotImplementedError("Time not implemented")
-
-            # Random over all images
-            self.batch = self.rays_rgb[self.i_batch:self.i_batch+self.N_rand] # [B, 2+1, 3*?]
-            self.batch = torch.transpose(self.batch, 0, 1)
-            self.batch_rays, self.target_s = self.batch[:2], self.self.batch[2]
-
-            self.i_batch += self.N_rand
-            if self.i_batch >= self.rays_rgb.shape[0]:
-                print("Shuffle data after an epoch!")
-                rand_idx = torch.randperm(self.rays_rgb.shape[0])
-                self.rays_rgb = rays_rgb[rand_idx]
-                self.i_batch = 0
-        else:
-            # Random from one image
-            if self.global_step >= self.args.precrop_iters_time:
-                self.img_i = np.random.choice(self.i_train)
-            else:
-                self.skip_factor = self.global_step / float(self.args.precrop_iters_time) * len(self.i_train)
-                self.max_sample = max(int(self.skip_factor), 3)
-                self.img_i = np.random.choice(self.i_train[:self.max_sample])
-
-            self.target = self.images[self.img_i]
-            self.pose = self.poses[self.img_i, :3, :4]
-            self.frame_time = self.times[self.img_i]
-
-            if self.N_rand is not None:
-                self.rays_o, self.rays_d = get_rays(self.H, self.W, self.focal, torch.Tensor(self.pose))  # (H, W, 3), (H, W, 3)
-
-                if self.global_step < self.args.precrop_iters:
-                    self.dH = int(self.H//2 * self.args.precrop_frac)
-                    self.dW = int(self.W//2 * self.args.precrop_frac)
-                    self.coords = torch.stack(
-                        torch.meshgrid(
-                            torch.linspace(self.H//2 - self.dH, self.H//2 + self.dH - 1, 2*self.dH), 
-                            torch.linspace(self.W//2 - self.dW, self.W//2 + self.dW - 1, 2*self.dW)
-                        ), -1)
-                    if self.global_step == self.start:
-                        print(f"[Config] Center cropping of size {2*self.dH} x {2*self.dW} is enabled until iter {self.args.precrop_iters}")                
-                else:
-                    self.coords = torch.stack(torch.meshgrid(torch.linspace(0, self.H-1, self.H), torch.linspace(0, self.W-1, self.W)), -1)  # (H, W, 2)
-
-                self.coords = torch.reshape(self.coords, [-1,2])  # (H * W, 2)
-                self.select_inds = np.random.choice(self.coords.shape[0], size=[self.N_rand], replace=False)  # (N_rand,)
-                self.select_coords = self.coords[self.select_inds].long()  # (N_rand, 2)
-                self.rays_o = self.rays_o[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
-                self.rays_d = self.rays_d[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
-                self.batch_rays = torch.stack([self.rays_o, self.rays_d], 0)
-                self.target_s = self.target[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
-        
+    def configure_optimizers(self):
         self.rgb, self.disp, self.acc, self.extras = render(self.H, self.W, self.focal, chunk=self.args.chunk, rays=self.batch_rays, frame_time=self.frame_time,
                                                 verbose=self.global_step < 10, retraw=True,
                                                 **self.render_kwargs_train)
@@ -874,14 +818,69 @@ class DNeRFTrainer(LightningModule):
             param_group['lr'] = self.new_lrate
         ################################
 
-        self.dt = time.time()-self.time0   
-        
-        #return self.loss
-    def configure_optimizers(self):
-        # Create optimizer
-        self.render_kwargs_train, self.render_kwargs_test, self.start, self.grad_vars, self.optimizer = create_nerf(self.args)
-        #self.optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
-        return self.optimizer
+        self.dt = time.time()-self.time0    
+    #def on_train_batch_start(self):
+    
+    def training_step(self):
+        self.time0 = time.time()
+        if self.use_batching:
+            raise NotImplementedError("Time not implemented")
+
+            # Random over all images
+            self.batch = self.rays_rgb[self.i_batch:self.i_batch+self.N_rand] # [B, 2+1, 3*?]
+            self.batch = torch.transpose(self.batch, 0, 1)
+            self.batch_rays, self.target_s = self.batch[:2], self.self.batch[2]
+
+            self.i_batch += self.N_rand
+            if self.i_batch >= self.rays_rgb.shape[0]:
+                print("Shuffle data after an epoch!")
+                rand_idx = torch.randperm(self.rays_rgb.shape[0])
+                self.rays_rgb = rays_rgb[rand_idx]
+                self.i_batch = 0
+        else:
+            # Random from one image
+            if self.global_step >= self.args.precrop_iters_time:
+                self.img_i = np.random.choice(self.i_train)
+            else:
+                self.skip_factor = self.global_step / float(self.args.precrop_iters_time) * len(self.i_train)
+                self.max_sample = max(int(self.skip_factor), 3)
+                self.img_i = np.random.choice(self.i_train[:self.max_sample])
+
+            self.target = self.images[self.img_i]
+            self.pose = self.poses[self.img_i, :3, :4]
+            self.frame_time = self.times[self.img_i]
+
+            if self.N_rand is not None:
+                self.rays_o, self.rays_d = get_rays(self.H, self.W, self.focal, torch.Tensor(self.pose))  # (H, W, 3), (H, W, 3)
+
+                if self.global_step < self.args.precrop_iters:
+                    self.dH = int(self.H//2 * self.args.precrop_frac)
+                    self.dW = int(self.W//2 * self.args.precrop_frac)
+                    self.coords = torch.stack(
+                        torch.meshgrid(
+                            torch.linspace(self.H//2 - self.dH, self.H//2 + self.dH - 1, 2*self.dH), 
+                            torch.linspace(self.W//2 - self.dW, self.W//2 + self.dW - 1, 2*self.dW)
+                        ), -1)
+                    if self.global_step == self.start:
+                        print(f"[Config] Center cropping of size {2*self.dH} x {2*self.dW} is enabled until iter {self.args.precrop_iters}")                
+                else:
+                    self.coords = torch.stack(torch.meshgrid(torch.linspace(0, self.H-1, self.H), torch.linspace(0, self.W-1, self.W)), -1)  # (H, W, 2)
+
+                self.coords = torch.reshape(self.coords, [-1,2])  # (H * W, 2)
+                self.select_inds = np.random.choice(self.coords.shape[0], size=[self.N_rand], replace=False)  # (N_rand,)
+                select_coords = coords[select_inds].long()  # (N_rand, 2)
+                self.rays_o = self.rays_o[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
+                self.rays_d = self.rays_d[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
+                self.batch_rays = torch.stack([rays_o, rays_d], 0)
+                self.target_s = self.target[self.select_coords[:, 0], self.select_coords[:, 1]]  # (N_rand, 3)
+
+    #def on_train_batch_end(self):
+    
+    #def on_validation_batch_start(self):
+    
+    #def validation_step(self):
+    
+    #def validation_epoch_end(self):
     
 if __name__ == '__main__':
     
@@ -893,7 +892,7 @@ if __name__ == '__main__':
                                name='exp',
                                default_hp_metric=False)
                                
-    trainer = Trainer(max_epochs=800000,
+    trainer = Trainer(max_epochs=args.N_iter,
                       #callbacks=callbacks,
                       logger=logger,
                       enable_model_summary=True,

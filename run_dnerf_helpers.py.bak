@@ -8,15 +8,7 @@ from torch import searchsorted
 
 
 # Misc
-def img2mse(x, y):
-    #x = x.detach().numpy()
-    y = torch.from_numpy(y)
-    #print (type(x))
-    #print (type(y))
-    mse = torch.mean((x - y) ** 2)
-    return mse
-
-#img2mse = lambda x, y : 
+img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
